@@ -1,0 +1,71 @@
+name: Model Deployment
+
+# Триггер: Запускать при пуше в ветку main
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write    
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      # -----------------------------------------------
+      # 1. Сборка и Публикация Docker-образа (CI)
+      # -----------------------------------------------
+      - name: Build, tag, and push Docker image
+        run: |
+          # 1. Сборка образа с использованием SHA-хеша для уникальности
+          IMAGE_TAG=ghcr.io/${{ github.repository }}:${{ github.sha }}
+          docker build -t $IMAGE_TAG .
+          
+          # 2. Логин в GitHub Container Registry (GHCR)
+          # Используется токен GITHUB_TOKEN, который автоматически предоставляется
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          
+          # 3. Публикация
+          docker push $IMAGE_TAG
+          
+          # 4. Сохранение тега для следующего шага
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+        env:
+          # Убедитесь, что эта переменная доступна
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      # -----------------------------------------------
+      # 2. Деплой через API (CD)
+      # -----------------------------------------------
+      - name: Deploy via Cloud Provider API (Trigger Blue/Green Switch)
+        run: |
+          # Эмулируем вызов API к серверу (например, Kubernetes или собственный деплой-скрипт)
+          # Сервер получает новый тег ($IMAGE_TAG) и выполняет:
+          # 1. Запуск новой версии (Green)
+          # 2. Переключение Nginx/балансировщика
+          curl -X POST https://api.cloudprovider/deploy \
+            -H "Authorization: Bearer ${{ secrets.CLOUD_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"image\": \"${{ env.IMAGE_TAG }}\", \"model_version\": \"${{ secrets.MODEL_VERSION }}\"}"
+            
+      # -----------------------------------------------
+      # 3. Проверка результата
+      # -----------------------------------------------
+      - name: Health Check after Deployment (Verification)
+        # Ждем 30 секунд, чтобы сервис успел запуститься и переключиться
+        run: |
+          sleep 30 
+          echo "Checking health..."
+          # Используем адрес вашего приложения и порт (предполагаем, что CLOUD_ENDPOINT содержит full URL)
+          RESPONSE=$(curl -s ${{ secrets.CLOUD_ENDPOINT }}/health)
+          
+          # Проверяем, что в ответе есть ожидаемая версия (например, v1.1.0)
+          if echo "$RESPONSE" | grep -q 'v1.1.0'; then
+            echo "✅ Deployment successful! Health check passed."
+          else
+            echo "❌ Health check failed. Response: $RESPONSE"
+            exit 1
+          fi
